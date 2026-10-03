@@ -6,6 +6,7 @@ from app.models.geofence import (
     MachineGeofenceState,
 )
 from app.models.machine import Machine, MachineType
+from app.models.machine_share import MachineShare
 from app.models.maintenance import ServiceEvent, ServiceEventKind
 from app.models.operator import Operator, OperatorSession
 from app.models.organization import Organization, OrganizationKind
@@ -21,6 +22,7 @@ __all__ = [
     "GeofenceKind",
     "Machine",
     "MachineGeofenceState",
+    "MachineShare",
     "MachineType",
     "Operator",
     "OperatorSession",

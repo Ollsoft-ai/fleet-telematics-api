@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import __version__
 from app.config import get_settings
 from app.db import get_engine
-from app.routers import auth, geofences, machines, operators, reports, telemetry
+from app.routers import auth, geofences, machines, operators, reports, shares, telemetry
 from app.services.dealer_sync import DealerClient
 
 
@@ -52,6 +52,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(machines.router)
+    app.include_router(shares.router)
     app.include_router(telemetry.router)
     app.include_router(operators.router)
     app.include_router(geofences.router)

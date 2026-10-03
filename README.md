@@ -66,6 +66,7 @@ All settings are environment variables with the `FLEET_` prefix. They can also b
 |---|---|---|
 | Auth | `POST /auth/token`, `GET /auth/me` | none / bearer |
 | Machines | `GET/POST /machines`, `GET/PATCH /machines/{id}`, `POST /machines/{id}/api-key` | bearer |
+| Location shares | `POST /machines/{id}/shares` (manager/admin), `GET /shares` (24-hour browser link), `GET /shares/location` | bearer / none / share token header |
 | Telemetry | `POST /telemetry` | machine key |
 | | `GET /machines/{id}/telemetry`, `GET /machines/{id}/faults` | bearer |
 | Operators | `GET/POST /operators`, `PATCH /operators/{id}` | bearer |
@@ -74,3 +75,4 @@ All settings are environment variables with the `FLEET_` prefix. They can also b
 | Reports | `GET /reports/utilization`, `GET /reports/utilization.csv`, `GET /reports/faults` | bearer |
 
 Machines authenticate with the `X-Machine-Key` header. Portal users send `Authorization: Bearer <token>`.
+The share creation response contains a URL and expiry time. Customers can open the URL to see the machine's latest coordinates and last-seen timestamp, refreshed every 15 seconds. API clients can pass the URL fragment's `token` as `X-Share-Token` to `GET /shares/location`. Treat the link as a secret.
