@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import __version__
 from app.config import get_settings
 from app.db import get_engine
-from app.routers import auth, machines, operators, telemetry
+from app.routers import auth, geofences, machines, operators, telemetry
 
 
 def configure_logging(level: str) -> None:
@@ -50,6 +50,7 @@ def create_app() -> FastAPI:
     app.include_router(machines.router)
     app.include_router(telemetry.router)
     app.include_router(operators.router)
+    app.include_router(geofences.router)
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:

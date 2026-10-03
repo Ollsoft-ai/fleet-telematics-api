@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import utcnow
 from app.models import FaultCode, FaultSeverity, Machine, TelemetryRecord
 from app.schemas.telemetry import FaultCodeIn, LampStatus, TelemetryBatch, TelemetrySample
+from app.services.geofence_alerts import GeofenceEvaluator
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ async def ingest_batch(
 
     stored = await _stored_timestamps(session, machine.id, samples)
     faults = await _load_faults(session, machine.id)
+    geofences = await GeofenceEvaluator.load(session, machine)
 
     latest: TelemetrySample | None = None
     for sample in samples:
@@ -68,6 +70,8 @@ async def ingest_batch(
         session.add(_to_record(machine.id, sample, recorded_at, now))
         for code in sample.fault_codes or ():
             _upsert_fault(session, machine.id, faults, code, recorded_at)
+        if sample.latitude is not None and sample.longitude is not None:
+            geofences.evaluate(sample.latitude, sample.longitude, recorded_at)
         _update_machine_state(machine, sample, recorded_at)
         latest = sample
         outcome.accepted += 1
