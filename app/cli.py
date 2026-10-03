@@ -11,6 +11,7 @@ from app.auth import hash_secret
 from app.config import get_settings
 from app.db import Base, get_engine, get_sessionmaker
 from app.models import Organization, OrganizationKind, User, UserRole
+from app.services.retention import purge_expired
 
 logger = logging.getLogger("app.cli")
 
@@ -46,6 +47,12 @@ async def create_admin(email: str, full_name: str, organization: str, kind: str)
     logger.info("Created organization %s with admin user %s", org.id, user.id)
 
 
+async def purge_telemetry() -> None:
+    settings = get_settings()
+    async with get_sessionmaker()() as session:
+        await purge_expired(session, retention_days=settings.telemetry_retention_days)
+
+
 async def _run(command: Coroutine[Any, Any, None]) -> None:
     try:
         await command
@@ -62,6 +69,7 @@ def main(argv: list[str] | None = None) -> None:
     admin.add_argument("--name", required=True)
     admin.add_argument("--organization", required=True)
     admin.add_argument("--kind", choices=[k.value for k in OrganizationKind], default="contractor")
+    commands.add_parser("purge-telemetry", help="delete data past the retention period")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=get_settings().log_level, format="%(levelname)s %(message)s")
@@ -70,6 +78,8 @@ def main(argv: list[str] | None = None) -> None:
             asyncio.run(_run(init_db()))
         case "create-admin":
             asyncio.run(_run(create_admin(args.email, args.name, args.organization, args.kind)))
+        case "purge-telemetry":
+            asyncio.run(_run(purge_telemetry()))
 
 
 if __name__ == "__main__":
