@@ -11,6 +11,7 @@ from app.auth import hash_secret
 from app.config import get_settings
 from app.db import Base, get_engine, get_sessionmaker
 from app.models import Organization, OrganizationKind, User, UserRole
+from app.services.dealer_sync import DealerClient, flush_pending
 from app.services.retention import purge_expired
 
 logger = logging.getLogger("app.cli")
@@ -53,6 +54,18 @@ async def purge_telemetry() -> None:
         await purge_expired(session, retention_days=settings.telemetry_retention_days)
 
 
+async def sync_dealer() -> None:
+    client = DealerClient.from_settings(get_settings())
+    if client is None:
+        logger.info("Dealer webhook is not configured; nothing to do")
+        return
+    try:
+        sent = await flush_pending(get_sessionmaker(), client, batch_size=200)
+    finally:
+        await client.aclose()
+    logger.info("Delivered %d service events to the dealer system", sent)
+
+
 async def _run(command: Coroutine[Any, Any, None]) -> None:
     try:
         await command
@@ -70,6 +83,7 @@ def main(argv: list[str] | None = None) -> None:
     admin.add_argument("--organization", required=True)
     admin.add_argument("--kind", choices=[k.value for k in OrganizationKind], default="contractor")
     commands.add_parser("purge-telemetry", help="delete data past the retention period")
+    commands.add_parser("sync-dealer", help="retry undelivered dealer service events")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=get_settings().log_level, format="%(levelname)s %(message)s")
@@ -80,6 +94,8 @@ def main(argv: list[str] | None = None) -> None:
             asyncio.run(_run(create_admin(args.email, args.name, args.organization, args.kind)))
         case "purge-telemetry":
             asyncio.run(_run(purge_telemetry()))
+        case "sync-dealer":
+            asyncio.run(_run(sync_dealer()))
 
 
 if __name__ == "__main__":

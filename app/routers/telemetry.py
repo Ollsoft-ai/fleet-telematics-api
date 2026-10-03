@@ -5,15 +5,16 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status
 from pydantic import AwareDatetime
 from sqlalchemy import select
 
 from app.auth import CurrentMachine, CurrentUser
-from app.db import SessionDep, utcnow
+from app.db import SessionDep, get_sessionmaker, utcnow
 from app.models import FaultCode, TelemetryRecord
 from app.routers.machines import get_org_machine
 from app.schemas.telemetry import FaultCodeRead, IngestResult, TelemetryBatch, TelemetryRead
+from app.services.dealer_sync import flush_pending
 from app.services.ingest import ingest_batch
 
 router = APIRouter(tags=["telemetry"])
@@ -22,11 +23,17 @@ router = APIRouter(tags=["telemetry"])
 @router.post("/telemetry", response_model=IngestResult, status_code=status.HTTP_202_ACCEPTED)
 async def ingest_telemetry(
     batch: TelemetryBatch,
+    request: Request,
+    background_tasks: BackgroundTasks,
     session: SessionDep,
     machine: CurrentMachine,
 ) -> IngestResult:
     outcome = await ingest_batch(session, machine, batch)
     await session.commit()
+
+    dealer_client = getattr(request.app.state, "dealer_client", None)
+    if outcome.service_events and dealer_client is not None:
+        background_tasks.add_task(flush_pending, get_sessionmaker(), dealer_client)
 
     return IngestResult(
         accepted=outcome.accepted, duplicates=outcome.duplicates, rejected=outcome.rejected

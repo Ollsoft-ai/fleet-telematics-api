@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import utcnow
 from app.models import FaultCode, FaultSeverity, Machine, TelemetryRecord
 from app.schemas.telemetry import FaultCodeIn, LampStatus, TelemetryBatch, TelemetrySample
+from app.services import maintenance
 from app.services.geofence_alerts import GeofenceEvaluator
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ class IngestOutcome:
     accepted: int = 0
     duplicates: int = 0
     rejected: int = 0
+    service_events: int = 0
 
 
 async def ingest_batch(
@@ -59,6 +61,7 @@ async def ingest_batch(
     stored = await _stored_timestamps(session, machine.id, samples)
     faults = await _load_faults(session, machine.id)
     geofences = await GeofenceEvaluator.load(session, machine)
+    hours_before = machine.engine_hours
 
     latest: TelemetrySample | None = None
     for sample in samples:
@@ -69,7 +72,10 @@ async def ingest_batch(
         stored.add(recorded_at)
         session.add(_to_record(machine.id, sample, recorded_at, now))
         for code in sample.fault_codes or ():
-            _upsert_fault(session, machine.id, faults, code, recorded_at)
+            fault, activated = _upsert_fault(session, machine.id, faults, code, recorded_at)
+            if activated and fault.severity is FaultSeverity.CRITICAL:
+                maintenance.open_fault_event(session, machine, fault)
+                outcome.service_events += 1
         if sample.latitude is not None and sample.longitude is not None:
             geofences.evaluate(sample.latitude, sample.longitude, recorded_at)
         _update_machine_state(machine, sample, recorded_at)
@@ -78,6 +84,9 @@ async def ingest_batch(
 
     if latest is not None and latest.fault_codes is not None:
         _clear_resolved_faults(faults, latest, latest.recorded_at.astimezone(UTC))
+    outcome.service_events += len(
+        maintenance.check_service_interval(session, machine, hours_before)
+    )
 
     logger.info(
         "Telemetry from machine %s: %d accepted, %d duplicate, %d rejected",

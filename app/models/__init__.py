@@ -6,6 +6,7 @@ from app.models.geofence import (
     MachineGeofenceState,
 )
 from app.models.machine import Machine, MachineType
+from app.models.maintenance import ServiceEvent, ServiceEventKind
 from app.models.operator import Operator, OperatorSession
 from app.models.organization import Organization, OrganizationKind
 from app.models.telemetry import FaultCode, FaultSeverity, TelemetryRecord
@@ -25,6 +26,8 @@ __all__ = [
     "OperatorSession",
     "Organization",
     "OrganizationKind",
+    "ServiceEvent",
+    "ServiceEventKind",
     "TelemetryRecord",
     "User",
     "UserRole",

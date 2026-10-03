@@ -11,6 +11,7 @@ from app import __version__
 from app.config import get_settings
 from app.db import get_engine
 from app.routers import auth, geofences, machines, operators, reports, telemetry
+from app.services.dealer_sync import DealerClient
 
 
 def configure_logging(level: str) -> None:
@@ -19,9 +20,12 @@ def configure_logging(level: str) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    app.state.dealer_client = DealerClient.from_settings(get_settings())
     try:
         yield
     finally:
+        if app.state.dealer_client is not None:
+            await app.state.dealer_client.aclose()
         await get_engine().dispose()
 
 
