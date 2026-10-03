@@ -16,3 +16,10 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
+
+# Compliance Copilot local files
+.opencode/
+AGENTS.md
+report_copilot.md
+violations.json
+rules_catalogue.json

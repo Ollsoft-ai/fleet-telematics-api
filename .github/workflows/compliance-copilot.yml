@@ -1,0 +1,105 @@
+name: Compliance Copilot
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: compliance-copilot-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  targeted-audit:
+    name: Targeted compliance audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      COMPLIANCE_URL: https://compliance.ollsoft.org
+      COMPLIANCE_TOKEN: ${{ secrets.COMPLIANCE_TOKEN }}
+      COMPANY_ID: ${{ secrets.COMPLIANCE_COMPANY_ID }}
+      PROJECT: fleet-telematics-api
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Request targeted audit
+        run: |
+          echo "Compliance Copilot: targeted audit requested for PR #${PR_NUMBER} at ${HEAD_SHA::7}"
+          echo "Parallel agents review the changed modules against the workspace's active rules."
+          date -u +%Y-%m-%dT%H:%M:%S > "$RUNNER_TEMP/started_at"
+
+      - name: Wait for audit result
+        run: |
+          python3 - <<'PY'
+          import json, os, time, urllib.request, urllib.parse
+          from datetime import datetime, timezone
+          base, tok, cid, proj = (os.environ[k] for k in ("COMPLIANCE_URL", "COMPLIANCE_TOKEN", "COMPANY_ID", "PROJECT"))
+          started = datetime.fromisoformat(open(os.path.join(os.environ["RUNNER_TEMP"], "started_at")).read().strip()).replace(tzinfo=timezone.utc)
+
+          def get(path, **q):
+              q["company_id"] = cid
+              req = urllib.request.Request(f"{base}{path}?{urllib.parse.urlencode(q)}", headers={"Authorization": f"Bearer {tok}"})
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  return json.load(r)
+
+          deadline = time.time() + 40 * 60
+          while time.time() < deadline:
+              try:
+                  audits = get("/api/telemetry/project-audits", project=proj)
+              except Exception as e:
+                  print(f"waiting ({e.__class__.__name__})"); audits = []
+              fresh = [a for a in audits if datetime.fromisoformat(a["timestamp"]) >= started]
+              if fresh:
+                  audit = get(f"/api/telemetry/audit/{fresh[0]['id']}", project=proj)
+                  json.dump(audit, open(os.path.join(os.environ["RUNNER_TEMP"], "audit.json"), "w"))
+                  print(f"audit {audit['id'][:8]}: {audit['violations_found']} violation(s) in {audit['files_scanned']} file(s)")
+                  break
+              print("audit running..."); time.sleep(20)
+          else:
+              raise SystemExit("timed out waiting for the audit")
+          PY
+
+      - name: Report on pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY' > "$RUNNER_TEMP/comment.md"
+          import json, os
+          a = json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "audit.json")))
+          sev = {s["severity"]: s["count"] for s in a["severity_breakdown"]}
+          icon = {"HIGH": "🔴", "MEDIUM": "🟠", "LOW": "🟡"}
+          order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+          n, files = a["violations_found"], a["files_scanned"]
+          print("## 🛡️ Compliance Copilot · targeted audit\n")
+          if n == 0:
+              print(f"✅ **No violations** in {files} file(s) checked against the workspace's active rules.\n")
+          else:
+              parts = " · ".join(f"{icon[s]} {sev[s]} {s}" for s in ("HIGH", "MEDIUM", "LOW") if sev.get(s))
+              print(f"**{n} violation{'s' if n != 1 else ''}** in {files} file(s) checked · {parts}\n")
+              if sev.get("HIGH"):
+                  print("> [!CAUTION]\n> High-severity findings block this merge.\n")
+              print("| Severity | Rule | Location |\n|---|---|---|")
+              for v in sorted(a["violations"], key=lambda v: order.get(v.get("severity", "MEDIUM").upper(), 3)):
+                  s = v.get("severity", "MEDIUM").upper()
+                  rule = v.get("rule", "").replace("|", "\\|")
+                  if v.get("source_url"):
+                      rule = f"[{rule}]({v['source_url']})"
+                  print(f"| {icon.get(s, '')} {s} | {rule} | `{v.get('file', '')}:{v.get('lines', '')}` |")
+          print(f"\n[Open the full audit report in Compliance Copilot →]({os.environ['COMPLIANCE_URL']}/dashboard/projects/{os.environ['PROJECT']})")
+          PY
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/comment.md"
+          cat "$RUNNER_TEMP/comment.md"
+
+      - name: Gate on severity
+        run: |
+          python3 - <<'PY'
+          import json, os
+          a = json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "audit.json")))
+          high = next((s["count"] for s in a["severity_breakdown"] if s["severity"] == "HIGH"), 0)
+          if high:
+              raise SystemExit(f"{high} HIGH-severity violation(s): merge blocked")
+          print("No HIGH-severity violations")
+          PY
