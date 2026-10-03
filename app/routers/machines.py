@@ -5,24 +5,73 @@ import uuid
 from collections.abc import Sequence
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, status
+from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import AdminUser, CurrentUser, ManagerUser, issue_machine_api_key
+from app.auth import (
+    AdminUser,
+    CurrentUser,
+    ManagerUser,
+    create_location_share_token,
+    decode_location_share_token,
+    issue_machine_api_key,
+)
+from app.config import SettingsDep
 from app.db import SessionDep, utcnow
 from app.models import Machine, MachineType, User
 from app.schemas.machine import (
     MachineApiKeyIssued,
     MachineCreate,
+    MachineLocationShare,
     MachineRead,
     MachineRegistered,
     MachineUpdate,
+    SharedMachineLocation,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/machines", tags=["machines"])
+share_router = APIRouter(tags=["machines"])
+
+SHARED_LOCATION_PAGE = """<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shared machine location</title></head>
+<body>
+<h1>Machine location</h1><p id="location" role="status">Loading location…</p>
+<script>
+const key = new URLSearchParams(window.location.hash.slice(1)).get("token");
+async function refreshLocation() {
+  if (!key) {
+    document.getElementById("location").textContent = "Invalid share link.";
+    return;
+  }
+  try {
+    const response = await fetch("/shared/machines/location/data", {
+      headers: {"X-Location-Share-Key": key}, cache: "no-store"
+    });
+    if (!response.ok) {
+      document.getElementById("location").textContent =
+        response.status === 404 ? "Share link expired or unavailable." : "Location unavailable.";
+      return;
+    }
+    const location = await response.json();
+    document.getElementById("location").textContent =
+      location.latitude === null || location.longitude === null
+        ? "No position reported yet."
+        : `Latitude: ${location.latitude}, longitude: ${location.longitude}` +
+          (location.last_seen_at ? ` (last seen: ${location.last_seen_at})` : "");
+  } catch (_) {
+    document.getElementById("location").textContent = "Location unavailable.";
+  }
+}
+refreshLocation();
+setInterval(refreshLocation, 30000);
+</script>
+</body></html>"""
 
 
 async def get_org_machine(session: AsyncSession, user: User, machine_id: uuid.UUID) -> Machine:
@@ -106,3 +155,57 @@ async def rotate_api_key(
     await session.commit()
     logger.info("API key for machine %s rotated by user %s", machine.id, user.id)
     return MachineApiKeyIssued(api_key=key.token, rotated_at=machine.api_key_rotated_at)
+
+
+@router.post(
+    "/{machine_id}/location-share",
+    response_model=MachineLocationShare,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_location_share(
+    machine_id: uuid.UUID,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    user: ManagerUser,
+    settings: SettingsDep,
+) -> MachineLocationShare:
+    machine = await get_org_machine(session, user, machine_id)
+    if not machine.is_active:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Machine not found")
+    token, expires_at = create_location_share_token(machine, settings)
+    response.headers["Cache-Control"] = "no-store"
+    return MachineLocationShare(
+        url=f"{request.url_for('view_shared_machine_location')}#token={token}",
+        expires_at=expires_at,
+    )
+
+
+@share_router.get("/shared/machines/location", response_class=HTMLResponse)
+async def view_shared_machine_location() -> HTMLResponse:
+    return HTMLResponse(
+        SHARED_LOCATION_PAGE,
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
+@share_router.get("/shared/machines/location/data", response_model=SharedMachineLocation)
+async def get_shared_machine_location(
+    session: SessionDep,
+    settings: SettingsDep,
+    response: Response,
+    share_key: Annotated[str | None, Header(alias="X-Location-Share-Key")] = None,
+) -> SharedMachineLocation:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if share_key is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Share link not found or expired")
+    machine_id, organization_id = decode_location_share_token(share_key, settings)
+    machine = await session.get(Machine, machine_id)
+    if machine is None or not machine.is_active or machine.organization_id != organization_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Share link not found or expired")
+    return SharedMachineLocation(
+        latitude=machine.last_latitude,
+        longitude=machine.last_longitude,
+        last_seen_at=machine.last_seen_at,
+    )

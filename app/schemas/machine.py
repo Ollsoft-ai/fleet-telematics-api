@@ -44,3 +44,14 @@ class MachineApiKeyIssued(BaseModel):
 class MachineRegistered(BaseModel):
     machine: MachineRead
     credentials: MachineApiKeyIssued
+
+
+class MachineLocationShare(BaseModel):
+    url: str
+    expires_at: datetime
+
+
+class SharedMachineLocation(BaseModel):
+    latitude: float | None
+    longitude: float | None
+    last_seen_at: datetime | None
