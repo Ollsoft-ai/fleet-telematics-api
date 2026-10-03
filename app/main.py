@@ -52,6 +52,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(machines.router)
+    app.include_router(machines.share_router)
     app.include_router(telemetry.router)
     app.include_router(operators.router)
     app.include_router(geofences.router)

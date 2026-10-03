@@ -6,7 +6,7 @@ import secrets
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Annotated, Any
 
 import jwt
@@ -21,6 +21,7 @@ from app.db import SessionDep, utcnow
 from app.models import Machine, User, UserRole
 
 API_KEY_SCHEME = "ftk"
+LOCATION_SHARE_AUDIENCE = "machine-location-share"
 
 _hasher = PasswordHasher()
 _dummy_hash = _hasher.hash(secrets.token_urlsafe(24))
@@ -83,6 +84,43 @@ def create_access_token(user: User, settings: Settings) -> tuple[str, int]:
         claims, settings.jwt_secret.get_secret_value(), algorithm=settings.jwt_algorithm
     )
     return token, int(ttl.total_seconds())
+
+
+def create_location_share_token(machine: Machine, settings: Settings) -> tuple[str, datetime]:
+    """Issue a machine-scoped bearer link that expires after 24 hours."""
+    now = utcnow().replace(microsecond=0)
+    expires_at = now + timedelta(hours=24)
+    token = jwt.encode(
+        {
+            "sub": str(machine.id),
+            "org": str(machine.organization_id),
+            "iss": settings.jwt_issuer,
+            "aud": LOCATION_SHARE_AUDIENCE,
+            "iat": now,
+            "nbf": now,
+            "exp": expires_at,
+            "jti": uuid.uuid4().hex,
+        },
+        settings.jwt_secret.get_secret_value(),
+        algorithm=settings.jwt_algorithm,
+    )
+    return token, expires_at
+
+
+def decode_location_share_token(token: str, settings: Settings) -> tuple[uuid.UUID, uuid.UUID]:
+    """Accept only valid, unexpired tokens issued for location sharing."""
+    try:
+        claims = jwt.decode(
+            token,
+            settings.jwt_secret.get_secret_value(),
+            algorithms=[settings.jwt_algorithm],
+            issuer=settings.jwt_issuer,
+            audience=LOCATION_SHARE_AUDIENCE,
+            options={"require": ["sub", "org", "iss", "aud", "iat", "nbf", "exp"]},
+        )
+        return uuid.UUID(claims["sub"]), uuid.UUID(claims["org"])
+    except (jwt.PyJWTError, ValueError, TypeError):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Share link not found or expired") from None
 
 
 def _unauthorized(detail: str, scheme: str = "Bearer") -> HTTPException:
